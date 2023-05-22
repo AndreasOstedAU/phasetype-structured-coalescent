@@ -117,3 +117,12 @@ generate_subint_matrix = function(n, D, subpop_sizes = rep(1, D), M = matrix(rep
   exit_vector = matrix_out[1:n_states-1, n_states] 
   return(list('subint_mat' = subint_mat, 'exit_vector' = exit_vector))
 }
+
+
+## extra function to calculate size of the subintensity matrix. 
+matrix_size = function(n,D) {
+  if (n ==1) { #absorbtion
+    return(0)
+  }
+  return(choose(n+D-1, n) + matrix_size(n-1, D))
+}

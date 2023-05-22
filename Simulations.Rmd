@@ -1,0 +1,342 @@
+---
+title: "Simulation"
+output: html_document
+date: "2023-05-22"
+---
+
+```{r setup, include=FALSE}
+library(PhaseTypeR)
+library(tidyverse)
+library(expm)
+source('generate_subint_matrix.R')
+```
+
+
+## Method of moments: Simulation, n = 2, D = 2, M = 1
+Estimating mutation rate (theta) and migration rate (M) from simulated data
+
+Simulating data with theta = 5, M = 1:
+```{r}
+S <- generate_subint_matrix(n=2, D=2)$subint_mat #M is by default 1 in this case
+
+theta <- 5 
+nsim <- 1e4
+
+T_mrca_w <- PH(S, init_probs = c(0.5,0,0.5))
+T_mrca_b <- PH(S, init_probs = c(0, 1, 0))
+
+T_total_w <- reward_phase_type(T_mrca_w, c(2,2,2))
+T_total_b <- reward_phase_type(T_mrca_b, c(2,2,2))
+
+sims_t_total_w <- rPH(nsim, T_total_w) 
+sims_t_total_b <- rPH(nsim, T_total_b) 
+
+mutations_w <- rpois(nsim, theta/2 * c(sims_t_total_w))
+mutations_b <- rpois(nsim, theta/2 * c(sims_t_total_b))
+
+
+emp_mean_w <- mean(mutations_w)
+emp_var_w <- var(mutations_w) 
+
+
+emp_mean_b <- mean(mutations_b)
+emp_var_b <- var(mutations_b) 
+```
+
+### Estimation of migration rate and mutation rate using method of moments
+For n = 2, D = 2, we can analytically handle the set of equations.
+
+#### Within: 
+results by setting sample means and variance equal to theoretical ones (found in Wakeley, 2009 p. 97)
+and solving the two equations with two unknowns. 
+```{r}
+theta_hat_w_mat <- emp_mean_w/2
+M_hat_w_mat <- -(emp_mean_w^2/(2*(emp_mean_w^2+emp_mean_w-emp_var_w)))
+
+print(c(theta_hat_w_mat, M_hat_w_mat))
+```
+#### Between:
+Same procedure, not so pretty formulas in this case:
+```{r}
+theta_hat_b_mat <- -(emp_mean_b*(-sqrt(-emp_mean_b^2*(3*emp_mean_b^2+4*emp_mean_b-4*emp_var_b)) + emp_mean_b^2 + 2*emp_mean_b - 2*emp_var_b )) / (2*(sqrt(-emp_mean_b^2*(3*emp_mean_b^2 + 4*emp_mean_b - 4*emp_var_b)) +emp_mean_b^2 ) )
+theta_hat_b_mat
+
+m_hat_b_mat <- (sqrt(-emp_mean_b^2*(3*emp_mean_b^2 + 4*emp_mean_b - 4*emp_var_b)) - emp_mean_b^2 - 2*emp_mean_b + 2*emp_var_b)/ (4*(emp_mean_b^2 + emp_mean_b - emp_var_b) )
+m_hat_b_mat
+```
+
+### Numerical optimization with Method of moments method using optim.
+
+For higher n and D we can use numerical optimization instead of solving the set of equations. 
+We simulate data and let `optim` find the best suiting set of parameters by defining a loss function that compares theoretical moments using a set of parameters to the simulated moments.
+```{r warning=FALSE}
+n = 3
+D = 3
+within = T
+
+theta1 <- 0.5
+m1 <- 1
+
+nsim <- 1e5
+
+S1 <- generate_subint_matrix(n=n, D=D, M = matrix(rep(m1, D*D), nrow = D, ncol = D))$subint_mat 
+
+
+if(within) {
+  alpha <- c(1, rep(0, matrix_size(n,D)-1))
+} else {
+  alpha <- c(0, 1, rep(0, matrix_size(n,D)-2))
+}
+
+T_mrca <- PH(S1, init_probs = alpha)
+T_total <- reward_phase_type(T_mrca, head(rowSums(state_space(n,D)), -1))
+
+sims_t_total <- rPH(nsim, T_total) 
+
+mutations <- rpois(nsim, theta1/2 * c(sims_t_total))
+
+empirical_mean <- mean(mutations)
+empirical_var <- var(mutations)
+
+loss_function <- function(X) {
+  theta = X[1]
+  #m = X[2]
+  
+  S <- generate_subint_matrix(n, D, M = matrix(rep(m1, D*D), nrow = D, ncol = D))$subint_mat 
+  reward_vector = head(rowSums(state_space(n,D)), -1)
+  
+
+  # Formula (4.7) in Wakeley, 2009 using phase-type moments
+  mean_t_total <- ( alpha %*% solve(-S) %*% diag(reward_vector) %*% matrix(rep(1, length(alpha)), nrow = length(alpha)))
+  
+  mean_S = (theta/2)*mean_t_total
+  
+  # Fomula (4.8) in Wakeley, 2009 using phase-type moments
+  second_moment <- (2*alpha %*% solve(((-S)%^%2)) %*% (diag(reward_vector) %^% 2)) %*% matrix(rep(1, length(alpha)), nrow = length(alpha))
+  
+  var_S = mean_S + (theta/2)^2 *( second_moment - mean_t_total^2)
+  
+  #compare with empirical mean and variance calculated from the previous simulations
+
+  return(mean(abs(c(mean_S - empirical_mean, var_S - empirical_var))))
+}
+
+
+optim(1,loss_function)
+```
+
+## Maximum likelihood estimation
+
+This method uses the sampling formula (Hobolth, 2023)
+
+Helper functions:
+```{r}
+SFS_structured <- function(theta,n=3,D=2,within=T, m){
+  if (within) {
+    initVec <- c(1, rep(0,matrix_size(n,D)-1))
+  }
+  else {
+    initVec <- c(0,1,rep(0,matrix_size(n,D)-2))
+  }
+  SMat <- generate_subint_matrix(n,D,M = matrix(rep(m, D*D), ncol=D, nrow=D))$subint_mat
+  RMat <- c(head(rowSums(state_space(n,D)), -1))
+  out <- list()
+  out$initVec <- initVec
+  out$SMat <- SMat
+  out$RMat <- RMat
+  out$mutaRate <- theta/2
+  return(out)
+}
+
+evo_model_to_prob_model <- function(evo_model){
+  SMat <- evo_model$SMat
+  RMat <- evo_model$RMat
+  lam <- evo_model$mutaRate
+  p_total <- solve(diag(dim(SMat)[1])  - (1/lam)*(diag(1/RMat) %*% SMat))
+  ## exit vector
+  nSt <- nrow(SMat)
+  sVec <- -SMat %*% rep(1,nSt)                 
+  exitVec <- (diag(dim(SMat)[1]) - p_total) %*% matrix(rep(1, dim(SMat)[1]), nrow = dim(SMat)[1])
+  out <- list()
+  out$initVec <- evo_model$initVec
+  out$exitVec <- exitVec
+  out$ptotal <- p_total
+  return(out)
+}
+
+#probability of observing xi = k total mutations. ´
+#q and Ptotal supplied from `evo_model_to_prob_model` as exitVec and ptotal respectively.
+prob_xi_total <- function(k,Ptotal,alpha,q){
+  probs <- rep(NA, length(k))
+  count = 1
+  for (i in k) {
+    probs[count] <- alpha %*% (Ptotal%^%i) %*% q
+    count = count + 1
+  }
+  return(probs)
+}
+
+```
+
+### Numerical optimization with MLE method using optim
+```{r}
+n = 3
+D = 3
+theta <- 0.5
+within = T
+
+nsim <- 1e5
+
+S <- generate_subint_matrix(n, D, M = matrix(rep(1, D*D), nrow = D, ncol = D))$subint_mat #m is 1 by default
+reward_vector <- c(head(rowSums(state_space(n,D)), -1))
+
+if (within) {
+  alpha = c(1, rep(0, matrix_size(n,D)-1))
+} else {
+  alpha = c(0, 1, rep(0, matrix_size(n,D)-2))
+}
+T_total <- reward_phase_type(PH(S, init_probs = alpha), reward = reward_vector)
+
+sims_t_total <- rPH(nsim, T_total)
+mutations <- rpois(nsim, theta/2 * c(sims_t_total)) 
+
+loss_mle <- function(X) {
+  theta = X[1]
+  
+  #find m and theta, which makes observing true k from sim most likely
+  evo_model <- SFS_structured(theta=theta,n=n,D=D,within=within, m=1)
+  #Converting to probability model
+  prob_model <- evo_model_to_prob_model(evo_model)
+
+  #Calculating probability of observing the observed amount of mutations in the sample (total) (log-likelihood)
+  prob_sample <- prob_xi_total(mutations,
+                               prob_model$ptotal,
+                               prob_model$initVec,
+                               prob_model$exitVec) %>% log %>% sum
+  return(-prob_sample)
+}
+
+#L-BFGS-B allows bounds on the search space
+optim(0.1, loss_mle, method = 'L-BFGS-B', lower = 0.1, upper = 5)
+```
+
+## Singletons and doubletons branch length
+
+Here, we sample singleton and doubleton branch length for n = 3, D = 2, instead of sampling the total number of mutations. 
+
+Helper functions (almost equivalent to above ones):
+```{r}
+SFS_Three_structured_branches <- function(theta,n=3,D=2,within=T, m){
+  if (within) {
+    initVec <- c(1, rep(0,matrix_size(n,D)-1))
+  }
+  else {
+    initVec <- c(0,1,rep(0,matrix_size(n,D)-2))
+  }
+  SMat <- generate_subint_matrix(n,D,M = matrix(rep(m, D*D), ncol=D, nrow=D))$subint_mat
+  RMat <- matrix( c(3,0, 3,0, 3,0, 3,0, 1,1, 1,1, 1,1), ncol=2, byrow=TRUE)
+  out <- list()
+  out$initVec <- initVec
+  out$SMat <- SMat
+  out$RMat <- RMat
+  out$mutaRate <- theta/2
+  return(out)
+}
+
+evo_model_to_prob_model_2 <- function(evo_model){
+  SMat <- evo_model$SMat
+  RMat <- evo_model$RMat
+  lam <- evo_model$mutaRate
+  ## A matrix
+  AMat <- solve( -SMat+lam*( diag( rowSums( RMat ) ) ) )
+  ## exit vector
+  nSt <- nrow( SMat )
+  sVec <- -SMat %*% rep(1,nSt)                 
+  exitVec <- AMat %*% sVec
+  ## Sub-transition matrices
+  prob_array <- array( 0, dim = c( ncol(RMat), rep(nSt, 2) ) )
+  for (i in 1:ncol(RMat)){
+    prob_array[i,,] <- AMat %*% ( lam*diag( RMat[,i] )) 
+  }
+  out <- list()
+  out$initVec <- evo_model$initVec
+  out$prob_array <- prob_array
+  out$exitVec <- exitVec
+  return(out)
+}
+
+
+sample_prob <- function(sample,prob_model){
+  initVec <- prob_model$initVec
+  prob_array <- prob_model$prob_array
+  exitVec <- prob_model$exitVec
+  ## Zero mutations
+  if (sum(sample)==0) return( as.double( initVec %*% exitVec) )
+  ## Positive number of mutations
+  nSt <- length(initVec)
+  mSet <- multiset( c( rep( 1:length(sample), sample ) ) )  
+  sum_prb <- 0
+  for (k in 1:ncol(mSet)){
+    ProdMat <- diag(nSt)
+    for (m in 1:nrow(mSet)){
+      ProdMat <-  ProdMat %*% prob_array[mSet[m,k],,]
+    }
+    sum_prb <- sum_prb + initVec %*% ProdMat %*% exitVec
+  }
+  return( as.double( sum_prb ) )
+}
+
+#vectorized version: can take list of pairs, e.g. 'samples <- list(c(2,3), c(1,0), c(5,4))'
+vec_sample_prob <- Vectorize(sample_prob, 'sample')
+```
+
+
+### Simulating singleton and doubleton mutations
+```{r}
+theta <- 0.5
+#Evolutionary model
+sfs_model_branches <- SFS_Three_structured_branches(theta=theta, m = 1, within = T)
+#Converting to probability model
+prob_model <- evo_model_to_prob_model_2(sfs_model_branches)
+
+#sample_prob(c(2,1), PrbMdl = prob_model)
+
+#multivariate phase type of singleton and doubleton branch lengths
+single_double_lengths <- MPH(sfs_model_branches$SMat, reward_mat = matrix( c(3,0, 3,0, 3,0, 3,0, 1,1, 1,1, 1,1), ncol=2, byrow=TRUE))
+
+
+nsim <- 1e4
+
+length_sims_single_double <- rMPH(nsim, single_double_lengths)
+
+sims_singleton_mut <- rpois(nsim, lambda = length_sims_single_double[,1]*theta/2)
+sims_doubleton_mut <- rpois(nsim, lambda = length_sims_single_double[,2]*theta/2)
+
+list_samples <- Map(c, sims_singleton_mut, sims_doubleton_mut)
+```
+
+### Numerical optimization 
+```{r}
+loss_branches <- function(X) {
+  TH = X[1]
+  M = X[2]
+  
+  sfs_model_branches <- SFS_Three_structured_branches(theta = TH, m = M, within = T)
+  
+  
+  #Converting to probability model
+  prob_model <- evo_model_to_prob_model_2(sfs_model_branches)
+  
+  
+  prob_sample <- vec_sample_prob(list_samples, prob_model) %>% log %>% sum
+  return(-prob_sample)
+}
+
+
+optim(c(1,3), loss_branches, method = 'L-BFGS-B', lower = c(0.1, 0.1), upper = c(10,10))
+```
+
+
+
+
+
