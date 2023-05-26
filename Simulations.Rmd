@@ -72,12 +72,12 @@ We simulate data and let `optim` find the best suiting set of parameters by defi
 ```{r warning=FALSE}
 n = 3
 D = 3
-within = T
+within = F
 
 theta1 <- 0.5
 m1 <- 1
 
-nsim <- 1e5
+nsim <- 1e4
 
 S1 <- generate_subint_matrix(n=n, D=D, M = matrix(rep(m1, D*D), nrow = D, ncol = D))$subint_mat 
 
@@ -100,21 +100,19 @@ empirical_var <- var(mutations)
 
 loss_function <- function(X) {
   theta = X[1]
-  #m = X[2]
+  m = X[2]
   
-  S <- generate_subint_matrix(n, D, M = matrix(rep(m1, D*D), nrow = D, ncol = D))$subint_mat 
+  S <- generate_subint_matrix(n, D, M = matrix(rep(m, D*D), nrow = D, ncol = D))$subint_mat 
   reward_vector = head(rowSums(state_space(n,D)), -1)
   
+  T_total_temp = reward_phase_type(PH(S, init_probs = alpha), reward = reward_vector)
+  mean_t_total = mean(T_total_temp)
+  var_t_total = var(T_total_temp)
 
-  # Formula (4.7) in Wakeley, 2009 using phase-type moments
-  mean_t_total <- ( alpha %*% solve(-S) %*% diag(reward_vector) %*% matrix(rep(1, length(alpha)), nrow = length(alpha)))
-  
+
   mean_S = (theta/2)*mean_t_total
-  
-  # Fomula (4.8) in Wakeley, 2009 using phase-type moments
-  second_moment <- (2*alpha %*% solve(((-S)%^%2)) %*% (diag(reward_vector) %^% 2)) %*% matrix(rep(1, length(alpha)), nrow = length(alpha))
-  
-  var_S = mean_S + (theta/2)^2 *( second_moment - mean_t_total^2)
+
+  var_S = mean_S + (theta/2)^2 *var_t_total
   
   #compare with empirical mean and variance calculated from the previous simulations
 
@@ -122,7 +120,7 @@ loss_function <- function(X) {
 }
 
 
-optim(1,loss_function)
+optim(c(1,1),loss_function, control = list(maxit = 10000))
 ```
 
 ## Maximum likelihood estimation
