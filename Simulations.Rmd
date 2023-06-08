@@ -70,6 +70,7 @@ m_hat_b_mat
 For higher n and D we can use numerical optimization instead of solving the set of equations. 
 We simulate data and let `optim` find the best suiting set of parameters by defining a loss function that compares theoretical moments using a set of parameters to the simulated moments.
 ```{r warning=FALSE}
+set.seed(1)
 n = 3
 D = 3
 within = F
@@ -178,14 +179,15 @@ prob_xi_total <- function(k,Ptotal,alpha,q){
 
 ### Numerical optimization with MLE method using optim
 ```{r}
+set.seed(1)
 n = 3
 D = 3
 theta <- 0.5
-within = T
+within = F
 
-nsim <- 1e5
+nsim <- 1e4
 
-S <- generate_subint_matrix(n, D, M = matrix(rep(1, D*D), nrow = D, ncol = D))$subint_mat #m is 1 by default
+S <- generate_subint_matrix(n, D, M = matrix(rep(1, D*D), nrow = D, ncol = D))$subint_mat 
 reward_vector <- c(head(rowSums(state_space(n,D)), -1))
 
 if (within) {
@@ -199,10 +201,11 @@ sims_t_total <- rPH(nsim, T_total)
 mutations <- rpois(nsim, theta/2 * c(sims_t_total)) 
 
 loss_mle <- function(X) {
-  theta = X[1]
+  #theta = X[1]
+  m = X[1]
   
   #find m and theta, which makes observing true k from sim most likely
-  evo_model <- SFS_structured(theta=theta,n=n,D=D,within=within, m=1)
+  evo_model <- SFS_structured(theta=0.5,n=n,D=D,within=within, m=m)
   #Converting to probability model
   prob_model <- evo_model_to_prob_model(evo_model)
 
@@ -217,6 +220,9 @@ loss_mle <- function(X) {
 #L-BFGS-B allows bounds on the search space
 optim(0.1, loss_mle, method = 'L-BFGS-B', lower = 0.1, upper = 5)
 ```
+within:  0.4927916
+between: 0.4965742
+
 
 ## Singletons and doubletons branch length
 
@@ -291,6 +297,8 @@ vec_sample_prob <- Vectorize(sample_prob, 'sample')
 
 ### Simulating singleton and doubleton mutations
 ```{r}
+set.seed(1)
+
 theta <- 0.5
 #Evolutionary model
 sfs_model_branches <- SFS_Three_structured_branches(theta=theta, m = 1, within = T)
